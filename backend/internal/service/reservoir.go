@@ -43,6 +43,10 @@ func (s *reservoirService) Create(ctx context.Context, input dto.CreateReservoir
 	if err := validateReservoirBusinessFields(input.Code, input.Name, input.Facility, input.Owner); err != nil {
 		return model.Reservoir{}, err
 	}
+	lower, upper, err := validateWaterLevelRange(input.WaterLevelLower, input.WaterLevelUpper)
+	if err != nil {
+		return model.Reservoir{}, err
+	}
 	item := model.Reservoir{
 		BaseModel: model.BaseModel{
 			Code: strings.ToUpper(strings.TrimSpace(input.Code)), Name: strings.TrimSpace(input.Name),
@@ -53,6 +57,7 @@ func (s *reservoirService) Create(ctx context.Context, input dto.CreateReservoir
 		MetricValue: input.MetricValue, MetricUnit: strings.TrimSpace(input.MetricUnit),
 		EffectiveAt: input.EffectiveAt.UTC(), Evidence: strings.TrimSpace(input.Evidence),
 		RelatedCode: strings.ToUpper(strings.TrimSpace(input.RelatedCode)),
+		WaterLevel:  input.WaterLevel, WaterLevelLower: lower, WaterLevelUpper: upper,
 	}
 	if err := s.security.WithinTransaction(ctx, func(txCtx context.Context) error {
 		if err := s.repository.Create(txCtx, &item); err != nil {
@@ -73,6 +78,10 @@ func (s *reservoirService) Update(ctx context.Context, id uint, input dto.Update
 	if err := validateReservoirBusinessFields(current.Code, input.Name, input.Facility, input.Owner); err != nil {
 		return model.Reservoir{}, err
 	}
+	lower, upper, err := validateWaterLevelRange(input.WaterLevelLower, input.WaterLevelUpper)
+	if err != nil {
+		return model.Reservoir{}, err
+	}
 	current.Name = strings.TrimSpace(input.Name)
 	current.Description = strings.TrimSpace(input.Description)
 	current.Facility = strings.TrimSpace(input.Facility)
@@ -84,6 +93,9 @@ func (s *reservoirService) Update(ctx context.Context, id uint, input dto.Update
 	current.EffectiveAt = input.EffectiveAt.UTC()
 	current.Evidence = strings.TrimSpace(input.Evidence)
 	current.RelatedCode = strings.ToUpper(strings.TrimSpace(input.RelatedCode))
+	current.WaterLevel = input.WaterLevel
+	current.WaterLevelLower = lower
+	current.WaterLevelUpper = upper
 	current.Version = input.ExpectedVersion + 1
 	current.UpdatedAt = time.Now().UTC()
 	if err := s.security.WithinTransaction(ctx, func(txCtx context.Context) error {
@@ -140,4 +152,16 @@ func validateReservoirBusinessFields(code, name, facility, owner string) error {
 		return ErrInvalidInput
 	}
 	return nil
+}
+
+// validateWaterLevelRange 校验水位许可区间：下限和上限要么都不填（按现状放行），
+// 要么成对填写，且下限不高于上限。返回规范化后的两个端点（均不填时为 nil）。
+func validateWaterLevelRange(lower, upper *float64) (*float64, *float64, error) {
+	if (lower == nil) != (upper == nil) {
+		return nil, nil, fmt.Errorf("%w: 水位许可区间的下限和上限必须同时填写或同时留空，单位米", ErrInvalidInput)
+	}
+	if lower != nil && *lower >= *upper {
+		return nil, nil, fmt.Errorf("%w: 水位许可区间下限 %.2f 米必须小于上限 %.2f 米", ErrInvalidInput, *lower, *upper)
+	}
+	return lower, upper, nil
 }

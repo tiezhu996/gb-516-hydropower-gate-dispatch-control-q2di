@@ -139,22 +139,26 @@ func seedReservoir(ctx context.Context, db *gorm.DB) error {
 		return err
 	}
 	now := time.Now().UTC()
+	level := func(value float64) *float64 { return &value }
 	items := []model.Reservoir{
 
 		{BaseModel: model.BaseModel{Code: "R-001", Name: "库区示例一", Status: "normal", Version: 1,
 			Description: "用于启动验证和主要流程演示的库区记录"}, Facility: "水电站闸门调度许可区域1", Owner: "运行一组",
 			Category: "常规", RiskLevel: "low", MetricValue: 12.5, MetricUnit: "unit",
-			EffectiveAt: now.Add(0 * time.Hour), Evidence: "已完成基础证据核对", RelatedCode: "R-001"},
+			EffectiveAt: now.Add(0 * time.Hour), Evidence: "已完成基础证据核对", RelatedCode: "R-001",
+			WaterLevel: 168.20, WaterLevelLower: level(165.00), WaterLevelUpper: level(175.00)},
 
 		{BaseModel: model.BaseModel{Code: "R-002", Name: "库区示例二", Status: "warning", Version: 1,
 			Description: "用于启动验证和主要流程演示的库区记录"}, Facility: "水电站闸门调度许可区域2", Owner: "质量复核组",
 			Category: "重点", RiskLevel: "medium", MetricValue: 25.0, MetricUnit: "%",
-			EffectiveAt: now.Add(3 * time.Hour), Evidence: "已完成基础证据核对", RelatedCode: "R-002"},
+			EffectiveAt: now.Add(3 * time.Hour), Evidence: "已完成基础证据核对", RelatedCode: "R-002",
+			WaterLevel: 170.50, WaterLevelLower: level(165.00), WaterLevelUpper: level(175.00)},
 
 		{BaseModel: model.BaseModel{Code: "R-003", Name: "库区示例三", Status: "critical", Version: 1,
 			Description: "用于启动验证和主要流程演示的库区记录"}, Facility: "水电站闸门调度许可区域3", Owner: "安全主管组",
 			Category: "复核", RiskLevel: "high", MetricValue: 37.5, MetricUnit: "score",
-			EffectiveAt: now.Add(6 * time.Hour), Evidence: "已完成基础证据核对", RelatedCode: "R-003"},
+			EffectiveAt: now.Add(6 * time.Hour), Evidence: "已完成基础证据核对", RelatedCode: "R-003",
+			WaterLevel: 176.80, WaterLevelLower: level(165.00), WaterLevelUpper: level(175.00)},
 	}
 	return db.WithContext(ctx).Create(&items).Error
 }
@@ -177,8 +181,8 @@ func seedGateUnit(ctx context.Context, db *gorm.DB) error {
 			Category: "重点", RiskLevel: "medium", MetricValue: 25.0, MetricUnit: "%",
 			EffectiveAt: now.Add(3 * time.Hour), Evidence: "已完成基础证据核对", RelatedCode: "R-002"},
 
-		{BaseModel: model.BaseModel{Code: "GU-003", Name: "闸门示例三", Status: "moving", Version: 1,
-			Description: "用于启动验证和主要流程演示的闸门记录"}, Facility: "水电站闸门调度许可区域3", Owner: "安全主管组",
+		{BaseModel: model.BaseModel{Code: "GU-003", Name: "闸门示例三", Status: "closed", Version: 1,
+			Description: "用于启动验证和主要流程演示的闸门记录；所属库区 R-003 水位已越上限，开闸会被放行区间挡住"}, Facility: "水电站闸门调度许可区域3", Owner: "安全主管组",
 			Category: "复核", RiskLevel: "high", MetricValue: 37.5, MetricUnit: "score",
 			EffectiveAt: now.Add(6 * time.Hour), Evidence: "已完成基础证据核对", RelatedCode: "R-003"},
 	}
@@ -206,10 +210,10 @@ func seedOperationDirective(ctx context.Context, db *gorm.DB) error {
 			EffectiveAt: now.Add(3 * time.Hour), Evidence: "待安全复核员完成第二人确认", RelatedCode: "GU-002", GateState: "closed",
 			SubmittedBy: "operator", SubmittedAt: &submittedAt},
 
-		{BaseModel: model.BaseModel{Code: "OD-003", Name: "右岸泄洪闸开启指令", Status: "executing", Version: 1,
-			Description: "用于启动验证和主要流程演示的操作指令记录"}, Facility: "水电站闸门调度许可区域3", Owner: "安全主管组",
+		{BaseModel: model.BaseModel{Code: "OD-003", Name: "右岸泄洪闸开启指令", Status: "approved", Version: 1,
+			Description: "用于启动验证和主要流程演示的操作指令记录；库区 R-003 水位已越上限，推进执行会被放行区间挡住"}, Facility: "水电站闸门调度许可区域3", Owner: "安全主管组",
 			Category: "复核", RiskLevel: "high", MetricValue: 37.5, MetricUnit: "score",
-			EffectiveAt: now.Add(6 * time.Hour), Evidence: "双人确认已完成，现场正在执行", RelatedCode: "GU-003", GateState: "open",
+			EffectiveAt: now.Add(6 * time.Hour), Evidence: "双人确认已完成，但库水位越过许可上限，待回落至区间内再执行", RelatedCode: "GU-003", GateState: "open",
 			SubmittedBy: "operator", SubmittedAt: &submittedAt, ApprovedBy: "reviewer", ApprovedAt: &approvedAt},
 	}
 	if err := db.WithContext(ctx).Create(&items).Error; err != nil {
@@ -231,9 +235,9 @@ func seedExecutionConfirmation(ctx context.Context, db *gorm.DB) error {
 	now := time.Now().UTC()
 	items := []model.ExecutionConfirmation{{
 		BaseModel: model.BaseModel{Code: "EC-001", Name: "右岸泄洪闸现场执行回执", Status: "pending", Version: 1,
-			Description: "关联已批准且正在执行的操作指令，记录现场反馈与证据"},
+			Description: "关联指令因库水位越过许可上限停在已复核，待指令恢复执行后再记录现场反馈与证据"},
 		Facility: "水电站闸门调度许可区域3", Owner: "运行一组", Category: "泄洪调度", RiskLevel: "high",
-		MetricValue: 37.5, MetricUnit: "%", EffectiveAt: now, Evidence: "待现场核对开度反馈、视频与水位变化", RelatedCode: "OD-003",
+		MetricValue: 37.5, MetricUnit: "%", EffectiveAt: now, Evidence: "指令尚未执行，待核对开度反馈、视频与水位变化", RelatedCode: "OD-003",
 	}}
 	return db.WithContext(ctx).Create(&items).Error
 }

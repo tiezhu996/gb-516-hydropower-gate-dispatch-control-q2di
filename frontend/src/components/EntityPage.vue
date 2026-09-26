@@ -23,6 +23,7 @@ const relatedOptions = ref<DomainRecord[]>([]);
 const createForm = reactive({
   code: '', name: '', description: '', facility: '', owner: '', category: '',
   riskLevel: 'medium', metricValue: 0, metricUnit: '%', evidence: '', relatedCode: '', gateState: 'closed',
+  waterLevel: 0, waterLevelLower: null as number | null, waterLevelUpper: null as number | null,
 });
 
 const highRisk = computed(() => props.store.items.filter((item: DomainRecord) => ['high', 'critical'].includes(item.riskLevel)).length);
@@ -66,6 +67,9 @@ async function prepareCreate(): Promise<void> {
 	createForm.evidence = '';
 	createForm.relatedCode = '';
   createForm.gateState = 'closed';
+	createForm.waterLevel = 0;
+	createForm.waterLevelLower = null;
+	createForm.waterLevelUpper = null;
 	relatedOptions.value = [];
 	const relationPaths: Record<string, string> = { gateUnit: 'reservoirs', operationDirective: 'gates', executionConfirmation: 'directives' };
 	try {
@@ -95,8 +99,54 @@ async function createRecord(): Promise<void> {
 		props.store.error = '请完整填写必填业务字段和现场证据';
 		return;
 	}
-  await props.store.createRecord(props.config.path, { ...createForm, effectiveAt: new Date().toISOString() });
+	if (props.config.key === 'reservoir') {
+		const hasLower = createForm.waterLevelLower !== null && createForm.waterLevelLower !== undefined;
+		const hasUpper = createForm.waterLevelUpper !== null && createForm.waterLevelUpper !== undefined;
+		if (hasLower !== hasUpper) {
+			props.store.error = '水位许可区间的下限和上限必须同时填写或同时留空';
+			return;
+		}
+		if (hasLower && hasUpper && (createForm.waterLevelLower as number) >= (createForm.waterLevelUpper as number)) {
+			props.store.error = '水位许可区间下限必须小于上限（米）';
+			return;
+		}
+	}
+  await props.store.createRecord(props.config.path, buildCreatePayload());
   if (!props.store.error) showCreate.value = false;
+}
+
+function buildCreatePayload(): Record<string, unknown> {
+	const payload: Record<string, unknown> = { ...createForm, effectiveAt: new Date().toISOString() };
+	if (props.config.key !== 'reservoir') {
+		delete payload.waterLevel;
+		delete payload.waterLevelLower;
+		delete payload.waterLevelUpper;
+	}
+	return payload;
+}
+
+// formatLevel 把水位数值统一显示为两位小数的米数；缺失时显示“-”。
+function formatLevel(value: number | null | undefined): string {
+	return value === null || value === undefined ? '-' : `${Number(value).toFixed(2)} 米`;
+}
+
+// rangeText 展示库区水位许可区间；没填区间时提示按现状放行。
+function rangeText(row: DomainRecord): string {
+	if (row.waterLevelLower === null || row.waterLevelLower === undefined ||
+		row.waterLevelUpper === null || row.waterLevelUpper === undefined) {
+		return '未设置区间';
+	}
+	return `${Number(row.waterLevelLower).toFixed(2)} ~ ${Number(row.waterLevelUpper).toFixed(2)} 米`;
+}
+
+// directivePermit 只对已复核（approved）的指令给出本次放行结论；其他状态
+// 尚未走到“推进执行”这道闸，列表上不做放行判定。
+function directivePermit(row: DomainRecord): { show: boolean; permitted: boolean; text: string } {
+	if (row.status !== 'approved') return { show: false, permitted: true, text: '' };
+	if (row.permitted) {
+		return { show: true, permitted: true, text: row.hasWaterLevelRange ? `区间内，可放行（${rangeText(row)}）` : '库区未设区间，按现状放行' };
+	}
+	return { show: true, permitted: false, text: row.permitReason || '水位不满足放行区间' };
 }
 
 function transitionsFor(item: DomainRecord): readonly string[] {
@@ -168,6 +218,34 @@ async function confirmTransition(): Promise<void> {
 		<el-table-column label="风险" width="80"><template #default="{ row }">{{ riskLabel(row.riskLevel) }}</template></el-table-column>
         <el-table-column prop="owner" label="责任人" min-width="110" />
 		<el-table-column v-if="['gateUnit', 'operationDirective', 'executionConfirmation'].includes(config.key)" prop="relatedCode" :label="relationLabel" width="130" />
+        <el-table-column v-if="config.key === 'reservoir'" label="当前水位" width="110">
+          <template #default="{ row }">{{ formatLevel(row.waterLevel) }}</template>
+        </el-table-column>
+        <el-table-column v-if="config.key === 'reservoir'" label="许可区间" min-width="170">
+          <template #default="{ row }">
+            <span>{{ rangeText(row) }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column v-if="config.key === 'operationDirective'" label="所属库区水位" min-width="180">
+          <template #default="{ row }">
+            <div class="permit-cell">
+              <strong v-if="row.reservoirCode">{{ row.reservoirCode }} · {{ formatLevel(row.reservoirWaterLevel) }}</strong>
+              <span v-else class="muted">未关联库区</span>
+              <small>{{ row.hasWaterLevelRange ? `区间 ${rangeText(row)}` : '库区未设区间' }}</small>
+            </div>
+          </template>
+        </el-table-column>
+        <el-table-column v-if="config.key === 'operationDirective'" label="本次放行" min-width="220">
+          <template #default="{ row }">
+            <el-tooltip v-if="directivePermit(row).show" :content="directivePermit(row).text" placement="top">
+              <span :class="`permit permit--${directivePermit(row).permitted ? 'pass' : 'block'}`">
+                {{ directivePermit(row).permitted ? '可放行' : '拦截·留已复核' }}
+              </span>
+            </el-tooltip>
+            <span v-else class="muted">未到执行环节</span>
+            <small v-if="directivePermit(row).show" class="permit-detail">{{ directivePermit(row).text }}</small>
+          </template>
+        </el-table-column>
         <el-table-column label="指标" width="105"><template #default="{ row }">{{ row.metricValue }} {{ row.metricUnit }}</template></el-table-column>
         <el-table-column label="更新时间" width="165"><template #default="{ row }">{{ formatDate(row.updatedAt) }}</template></el-table-column>
         <el-table-column label="操作" min-width="220" fixed="right">
@@ -199,6 +277,9 @@ async function confirmTransition(): Promise<void> {
 		  <el-form-item :label="metricLabel"><el-input-number v-model="createForm.metricValue" :min="0" :precision="2" controls-position="right" /></el-form-item>
 		  <el-form-item label="指标单位"><el-input v-model="createForm.metricUnit" /></el-form-item>
 		  <el-form-item v-if="config.key === 'operationDirective'" label="目标闸门状态"><el-select v-model="createForm.gateState"><el-option v-for="state in ['open', 'closed', 'locked']" :key="state" :label="statusLabel(state)" :value="state" /></el-select></el-form-item>
+		  <el-form-item v-if="config.key === 'reservoir'" label="当前水位（米）"><el-input-number v-model="createForm.waterLevel" :precision="2" controls-position="right" /></el-form-item>
+		  <el-form-item v-if="config.key === 'reservoir'" label="水位许可下限（米，留空表示不设区间）"><el-input-number v-model="createForm.waterLevelLower" :precision="2" controls-position="right" :placeholder="null" /></el-form-item>
+		  <el-form-item v-if="config.key === 'reservoir'" label="水位许可上限（米，留空表示不设区间）"><el-input-number v-model="createForm.waterLevelUpper" :precision="2" controls-position="right" /></el-form-item>
         </div>
 		<el-form-item label="业务说明"><el-input v-model="createForm.description" type="textarea" :rows="2" maxlength="1000" show-word-limit /></el-form-item>
         <el-form-item label="现场证据"><el-input v-model="createForm.evidence" type="textarea" :rows="3" /></el-form-item>

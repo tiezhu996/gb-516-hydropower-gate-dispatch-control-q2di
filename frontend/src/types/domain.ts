@@ -23,6 +23,18 @@ export interface DomainRecord {
 	confirmedBy?: string;
 	confirmedAt?: string;
 	approvals?: DirectiveApproval[];
+	// 库区水位许可区间（米）：两端同时为 null 表示库区没填区间，按现状放行。
+	waterLevel?: number | null;
+	waterLevelLower?: number | null;
+	waterLevelUpper?: number | null;
+	// 指令列表上由后端沿“闸门 → 库区”补齐的只读放行信息。
+	reservoirCode?: string;
+	reservoirName?: string;
+	reservoirStatus?: string;
+	reservoirWaterLevel?: number | null;
+	hasWaterLevelRange?: boolean;
+	permitted?: boolean;
+	permitReason?: string;
   createdAt: string;
   updatedAt: string;
 }

@@ -58,6 +58,11 @@ td small { display: block; color: #7d8d97; margin-top: 4px; }
 .gate-state--closed { color: #4f6370; background: #edf2f4; }
 .gate-state--moving { color: #7d5307; background: #fff1ce; border-color: #e7c66e; }
 .gate-state--locked { color: #922b34; background: #fde8ea; border-color: #e6a6ad; }
+.permit-cell { display: flex; flex-direction: column; gap: 3px; }
+.permit-cell small, .permit-detail { display: block; color: #7d8d97; font-size: 12px; line-height: 1.45; }
+.permit { display: inline-flex; align-items: center; border-radius: 3px; padding: 4px 8px; font-size: 12px; font-weight: 700; white-space: nowrap; width: fit-content; }
+.permit--pass { color: #176c55; background: #dff3ec; border: 1px solid #9ed5c5; }
+.permit--block { color: #922b34; background: #fde8ea; border: 1px solid #e6a6ad; cursor: help; }
 .timeline-panel { margin-bottom: 18px; padding: 14px 0 16px; border-top: 1px solid #d5e0e5; border-bottom: 1px solid #d5e0e5; }
 .timeline-panel > header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 11px; }
 .timeline-panel > header span { color: #6d7f8a; font-size: 12px; }

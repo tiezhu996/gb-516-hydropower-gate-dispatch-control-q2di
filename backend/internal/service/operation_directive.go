@@ -25,19 +25,66 @@ type OperationDirectiveService interface {
 type operationDirectiveService struct {
 	repository repository.OperationDirectiveRepository
 	gates      repository.GateUnitRepository
+	reservoirs repository.ReservoirRepository
 	security   SecurityService
 }
 
-func NewOperationDirectiveService(repo repository.OperationDirectiveRepository, gates repository.GateUnitRepository, security SecurityService) OperationDirectiveService {
-	return &operationDirectiveService{repository: repo, gates: gates, security: security}
+func NewOperationDirectiveService(repo repository.OperationDirectiveRepository, gates repository.GateUnitRepository, reservoirs repository.ReservoirRepository, security SecurityService) OperationDirectiveService {
+	return &operationDirectiveService{repository: repo, gates: gates, reservoirs: reservoirs, security: security}
 }
 
 func (s *operationDirectiveService) List(ctx context.Context, query dto.PageQuery) (repository.Page[model.OperationDirective], error) {
-	return s.repository.List(ctx, query)
+	page, err := s.repository.List(ctx, query)
+	if err != nil {
+		return page, err
+	}
+	for index := range page.Items {
+		if err := s.attachReservoirPermit(ctx, &page.Items[index]); err != nil {
+			return page, err
+		}
+	}
+	return page, nil
 }
 
 func (s *operationDirectiveService) Get(ctx context.Context, id uint) (model.OperationDirective, error) {
-	return s.repository.Get(ctx, id)
+	item, err := s.repository.Get(ctx, id)
+	if err != nil {
+		return item, err
+	}
+	if err := s.attachReservoirPermit(ctx, &item); err != nil {
+		return item, err
+	}
+	return item, nil
+}
+
+// attachReservoirPermit 沿“指令 → 关联闸门 → 所属库区”补齐当前水位和放行
+// 评估，供指令列表直接展示。关联对象缺失时保留指令本身数据（不阻断读取）。
+func (s *operationDirectiveService) attachReservoirPermit(ctx context.Context, directive *model.OperationDirective) error {
+	gate, err := s.gates.GetByCode(ctx, directive.RelatedCode)
+	if err != nil {
+		return nil
+	}
+	reservoir, err := s.reservoirs.GetByCode(ctx, gate.RelatedCode)
+	if err != nil {
+		return nil
+	}
+	directive.ReservoirCode = reservoir.Code
+	directive.ReservoirName = reservoir.Name
+	directive.ReservoirStatus = reservoir.Status
+	directive.ReservoirWaterLevel = reservoir.WaterLevel
+	directive.HasWaterLevelRange = reservoir.HasWaterLevelRange()
+	if reservoir.WaterLevelLower != nil {
+		directive.WaterLevelLower = *reservoir.WaterLevelLower
+	}
+	if reservoir.WaterLevelUpper != nil {
+		directive.WaterLevelUpper = *reservoir.WaterLevelUpper
+	}
+	permit := evaluateWaterLevelPermit(reservoir, *directive)
+	directive.Permitted = permit.Permitted
+	if !permit.Permitted {
+		directive.PermitReason = permit.Reason
+	}
+	return nil
 }
 
 func (s *operationDirectiveService) Create(ctx context.Context, input dto.CreateOperationDirective, actor, requestID string) (model.OperationDirective, error) {
@@ -119,7 +166,7 @@ func (s *operationDirectiveService) Update(ctx context.Context, id uint, input d
 	}); err != nil {
 		return model.OperationDirective{}, fmt.Errorf("update 操作指令: %w", err)
 	}
-	return s.repository.Get(ctx, id)
+	return s.Get(ctx, id)
 }
 
 func (s *operationDirectiveService) Transition(ctx context.Context, id uint, input dto.TransitionRequest, actor, role, requestID string) (model.OperationDirective, error) {
@@ -146,6 +193,17 @@ func (s *operationDirectiveService) Transition(ctx context.Context, id uint, inp
 		}
 		if target == string(constants.DirectiveStateExecuting) && linkedGate.Status == string(constants.GateStateLocked) {
 			return model.OperationDirective{}, fmt.Errorf("%w: locked gate cannot execute a directive", ErrInvalidInput)
+		}
+		// 已复核推进执行：按关联闸门所属库区的当前水位判一次放行。挡住时
+		// 指令留在已复核（不写状态、不写审计），并说清区间与水位。
+		if target == string(constants.DirectiveStateExecuting) {
+			reservoir, reservoirErr := s.reservoirs.GetByCode(ctx, linkedGate.RelatedCode)
+			if reservoirErr != nil {
+				return model.OperationDirective{}, fmt.Errorf("linked reservoir %q: %w", linkedGate.RelatedCode, reservoirErr)
+			}
+			if permit := evaluateWaterLevelPermit(reservoir, current); !permit.Permitted {
+				return model.OperationDirective{}, fmt.Errorf("%w: %s", ErrWaterLevelBlocked, permit.Reason)
+			}
 		}
 		gate = &linkedGate
 		if target == string(constants.DirectiveStateAborted) {
@@ -200,7 +258,7 @@ func (s *operationDirectiveService) Transition(ctx context.Context, id uint, inp
 	}); err != nil {
 		return model.OperationDirective{}, fmt.Errorf("transition 操作指令: %w", err)
 	}
-	return s.repository.Get(ctx, id)
+	return s.Get(ctx, id)
 }
 
 func (s *operationDirectiveService) Delete(ctx context.Context, id uint, actor, requestID string) error {

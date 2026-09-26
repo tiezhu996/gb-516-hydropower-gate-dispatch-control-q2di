@@ -22,16 +22,22 @@ func newExecutionWorkflow(t *testing.T) (ExecutionConfirmationService, Operation
 	}
 	sqlDB, _ := db.DB()
 	sqlDB.SetMaxOpenConns(1)
-	if err := db.AutoMigrate(&model.GateUnit{}, &model.OperationDirective{}, &model.DirectiveApproval{}, &model.ExecutionConfirmation{}, &model.AuditLog{}); err != nil {
+	if err := db.AutoMigrate(&model.Reservoir{}, &model.GateUnit{}, &model.OperationDirective{}, &model.DirectiveApproval{}, &model.ExecutionConfirmation{}, &model.AuditLog{}); err != nil {
 		t.Fatalf("migrate test database: %v", err)
 	}
 	gateRepo := repository.NewGateUnitRepository(db)
+	reservoirRepo := repository.NewReservoirRepository(db)
 	directiveRepo := repository.NewOperationDirectiveRepository(db)
 	confirmationRepo := repository.NewExecutionConfirmationRepository(db)
 	security := NewSecurityService(repository.NewSecurityRepository(db), config.Config{})
-	directives := NewOperationDirectiveService(directiveRepo, gateRepo, security)
+	directives := NewOperationDirectiveService(directiveRepo, gateRepo, reservoirRepo, security)
 	confirmations := NewExecutionConfirmationService(confirmationRepo, directiveRepo, gateRepo, security)
-	gate := model.GateUnit{BaseModel: model.BaseModel{Code: "GU-FLOW", Name: "泄洪闸", Status: "closed", Version: 1}, Facility: "主坝", Owner: "运行一组"}
+	lower, upper := 165.0, 175.0
+	reservoir := model.Reservoir{BaseModel: model.BaseModel{Code: "R-FLOW", Name: "主坝库区", Status: "normal", Version: 1}, Facility: "主坝", Owner: "运行一组", WaterLevel: 170.0, WaterLevelLower: &lower, WaterLevelUpper: &upper}
+	if err := reservoirRepo.Create(context.Background(), &reservoir); err != nil {
+		t.Fatalf("create reservoir: %v", err)
+	}
+	gate := model.GateUnit{BaseModel: model.BaseModel{Code: "GU-FLOW", Name: "泄洪闸", Status: "closed", Version: 1}, Facility: "主坝", Owner: "运行一组", RelatedCode: "R-FLOW"}
 	if err := gateRepo.Create(context.Background(), &gate); err != nil {
 		t.Fatalf("create gate: %v", err)
 	}

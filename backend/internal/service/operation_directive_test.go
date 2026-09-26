@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -27,15 +28,20 @@ func newDirectiveService(t *testing.T) (OperationDirectiveService, *gorm.DB) {
 		t.Fatalf("database handle: %v", err)
 	}
 	sqlDB.SetMaxOpenConns(1)
-	if err := db.AutoMigrate(&model.GateUnit{}, &model.OperationDirective{}, &model.DirectiveApproval{}, &model.AuditLog{}); err != nil {
+	if err := db.AutoMigrate(&model.Reservoir{}, &model.GateUnit{}, &model.OperationDirective{}, &model.DirectiveApproval{}, &model.AuditLog{}); err != nil {
 		t.Fatalf("migrate test database: %v", err)
 	}
-	gate := model.GateUnit{BaseModel: model.BaseModel{Code: "GU-TEST", Name: "右岸泄洪闸", Status: "closed", Version: 1}, Facility: "右岸坝段", Owner: "运行一组"}
+	lower, upper := 165.0, 175.0
+	reservoir := model.Reservoir{BaseModel: model.BaseModel{Code: "R-TEST", Name: "右岸库区", Status: "normal", Version: 1}, Facility: "右岸坝段", Owner: "运行一组", WaterLevel: 170.0, WaterLevelLower: &lower, WaterLevelUpper: &upper}
+	if err := db.Create(&reservoir).Error; err != nil {
+		t.Fatalf("create test reservoir: %v", err)
+	}
+	gate := model.GateUnit{BaseModel: model.BaseModel{Code: "GU-TEST", Name: "右岸泄洪闸", Status: "closed", Version: 1}, Facility: "右岸坝段", Owner: "运行一组", RelatedCode: "R-TEST"}
 	if err := db.Create(&gate).Error; err != nil {
 		t.Fatalf("create test gate: %v", err)
 	}
 	security := NewSecurityService(repository.NewSecurityRepository(db), config.Config{})
-	return NewOperationDirectiveService(repository.NewOperationDirectiveRepository(db), repository.NewGateUnitRepository(db), security), db
+	return NewOperationDirectiveService(repository.NewOperationDirectiveRepository(db), repository.NewGateUnitRepository(db), repository.NewReservoirRepository(db), security), db
 }
 
 func directiveInput(code string) dto.CreateOperationDirective {
@@ -145,3 +151,160 @@ func TestDirectiveCreateRollsBackWhenAuditCannotPersist(t *testing.T) {
 		t.Fatalf("directive persisted without audit: count=%d", count)
 	}
 }
+
+// approveDirective 走完整 draft → pending → approved 双人复核流程。
+func approveDirective(t *testing.T, svc OperationDirectiveService, code, gateState string) model.OperationDirective {
+	t.Helper()
+	ctx := context.Background()
+	input := directiveInput(code)
+	input.GateState = gateState
+	created, err := svc.Create(ctx, input, "operator", "req-create")
+	if err != nil {
+		t.Fatalf("create directive: %v", err)
+	}
+	submitted, err := svc.Transition(ctx, created.ID, dto.TransitionRequest{Status: "pending", ExpectedVersion: created.Version, Reason: "提交复核"}, "operator", model.RoleOperator, "req-submit")
+	if err != nil {
+		t.Fatalf("submit directive: %v", err)
+	}
+	approved, err := svc.Transition(ctx, submitted.ID, dto.TransitionRequest{Status: "approved", ExpectedVersion: submitted.Version, Reason: "复核通过"}, "reviewer", model.RoleReviewer, "req-approve")
+	if err != nil {
+		t.Fatalf("approve directive: %v", err)
+	}
+	return approved
+}
+
+func updateTestReservoir(t *testing.T, db *gorm.DB, status string, waterLevel float64, lower, upper *float64) {
+	t.Helper()
+	if err := db.Model(&model.Reservoir{}).Where("code = ?", "R-TEST").
+		Updates(map[string]any{"status": status, "water_level": waterLevel, "water_level_lower": lower, "water_level_upper": upper}).Error; err != nil {
+		t.Fatalf("update test reservoir: %v", err)
+	}
+}
+
+func TestExecuteBlockedAboveUpperStaysApprovedForOpenDirective(t *testing.T) {
+	svc, db := newDirectiveService(t)
+	approved := approveDirective(t, svc, "OD-ABOVE-UPPER", "open")
+	updateTestReservoir(t, db, "warning", 176.2, ptrFloat(165.0), ptrFloat(175.0))
+
+	_, err := svc.Transition(context.Background(), approved.ID, dto.TransitionRequest{
+		Status: "executing", ExpectedVersion: approved.Version, Reason: "越上限开闸应被挡住",
+	}, "operator", model.RoleOperator, "req-execute-blocked")
+	if !errors.Is(err, ErrWaterLevelBlocked) {
+		t.Fatalf("above-upper open should be blocked by water level permit, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "176.20") || !strings.Contains(err.Error(), "175.00") {
+		t.Fatalf("block reason must state window and level: %v", err)
+	}
+	stored, getErr := svc.Get(context.Background(), approved.ID)
+	if getErr != nil {
+		t.Fatalf("reload blocked directive: %v", getErr)
+	}
+	if stored.Status != "approved" || stored.Version != approved.Version {
+		t.Fatalf("blocked directive must stay approved, got status=%s version=%d", stored.Status, stored.Version)
+	}
+	gate, _ := repository.NewGateUnitRepository(db).GetByCode(context.Background(), "GU-TEST")
+	if gate.Status != "closed" {
+		t.Fatalf("gate must not move when blocked, got %s", gate.Status)
+	}
+}
+
+func TestCloseDirectiveStillPassesWhenAboveUpper(t *testing.T) {
+	svc, db := newDirectiveService(t)
+	approved := approveDirective(t, svc, "OD-ABOVE-UPPER-CLOSE", "closed")
+	updateTestReservoir(t, db, "warning", 176.2, ptrFloat(165.0), ptrFloat(175.0))
+
+	executing, err := svc.Transition(context.Background(), approved.ID, dto.TransitionRequest{
+		Status: "executing", ExpectedVersion: approved.Version, Reason: "越上限关闸照旧放行",
+	}, "operator", model.RoleOperator, "req-execute-close")
+	if err != nil {
+		t.Fatalf("close directive must still pass above upper level: %v", err)
+	}
+	if executing.Status != "executing" {
+		t.Fatalf("expected executing, got %s", executing.Status)
+	}
+}
+
+func TestExecuteBlockedBelowLowerStaysApproved(t *testing.T) {
+	svc, db := newDirectiveService(t)
+	approved := approveDirective(t, svc, "OD-BELOW-LOWER", "open")
+	updateTestReservoir(t, db, "warning", 164.8, ptrFloat(165.0), ptrFloat(175.0))
+
+	_, err := svc.Transition(context.Background(), approved.ID, dto.TransitionRequest{
+		Status: "executing", ExpectedVersion: approved.Version, Reason: "低于下限开闸应被挡住",
+	}, "operator", model.RoleOperator, "req-execute-low")
+	if !errors.Is(err, ErrWaterLevelBlocked) {
+		t.Fatalf("below-lower open should be blocked, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "164.80") || !strings.Contains(err.Error(), "下限 165.00") {
+		t.Fatalf("block reason must state lower bound and level: %v", err)
+	}
+}
+
+func TestRestrictedReservoirRejectsOpenDirective(t *testing.T) {
+	svc, db := newDirectiveService(t)
+	approved := approveDirective(t, svc, "OD-RESTRICTED", "open")
+	updateTestReservoir(t, db, "restricted", 170.0, ptrFloat(165.0), ptrFloat(175.0))
+
+	_, err := svc.Transition(context.Background(), approved.ID, dto.TransitionRequest{
+		Status: "executing", ExpectedVersion: approved.Version, Reason: "受限库区开闸必须拒绝",
+	}, "operator", model.RoleOperator, "req-execute-restricted")
+	if !errors.Is(err, ErrWaterLevelBlocked) {
+		t.Fatalf("restricted open should be blocked, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "受限") {
+		t.Fatalf("block reason must mention restricted state: %v", err)
+	}
+}
+
+func TestRestrictedReservoirAllowsCloseDirective(t *testing.T) {
+	svc, db := newDirectiveService(t)
+	approved := approveDirective(t, svc, "OD-RESTRICTED-CLOSE", "closed")
+	updateTestReservoir(t, db, "restricted", 176.8, ptrFloat(165.0), ptrFloat(175.0))
+
+	if _, err := svc.Transition(context.Background(), approved.ID, dto.TransitionRequest{
+		Status: "executing", ExpectedVersion: approved.Version, Reason: "受限库区关闸放行",
+	}, "operator", model.RoleOperator, "req-execute-restricted-close"); err != nil {
+		t.Fatalf("restricted close must pass: %v", err)
+	}
+}
+
+func TestDirectiveWithoutWaterLevelRangeFollowsCurrentBehavior(t *testing.T) {
+	svc, db := newDirectiveService(t)
+	approved := approveDirective(t, svc, "OD-NO-RANGE", "open")
+	// 区间两端都不填：即便水位在任意位置也按现状放行。
+	updateTestReservoir(t, db, "critical", 999.0, nil, nil)
+
+	if _, err := svc.Transition(context.Background(), approved.ID, dto.TransitionRequest{
+		Status: "executing", ExpectedVersion: approved.Version, Reason: "无区间按现状放行",
+	}, "operator", model.RoleOperator, "req-execute-norange"); err != nil {
+		t.Fatalf("directive without range should pass: %v", err)
+	}
+}
+
+func TestDirectiveListEnrichesReservoirWaterLevelAndPermit(t *testing.T) {
+	svc, db := newDirectiveService(t)
+	approved := approveDirective(t, svc, "OD-LIST", "open")
+	updateTestReservoir(t, db, "warning", 176.2, ptrFloat(165.0), ptrFloat(175.0))
+
+	page, err := svc.List(context.Background(), dto.PageQuery{Page: 1, PageSize: 20})
+	if err != nil {
+		t.Fatalf("list directives: %v", err)
+	}
+	var listed *model.OperationDirective
+	for index := range page.Items {
+		if page.Items[index].ID == approved.ID {
+			listed = &page.Items[index]
+		}
+	}
+	if listed == nil {
+		t.Fatal("approved directive not found in list")
+	}
+	if listed.ReservoirCode != "R-TEST" || listed.ReservoirWaterLevel != 176.2 || !listed.HasWaterLevelRange {
+		t.Fatalf("list row missing reservoir water level enrichment: %#v", listed)
+	}
+	if listed.Permitted || !strings.Contains(listed.PermitReason, "176.20") {
+		t.Fatalf("list row should show blocked permit with reason, got permitted=%v reason=%q", listed.Permitted, listed.PermitReason)
+	}
+}
+
+func ptrFloat(value float64) *float64 { return &value }
