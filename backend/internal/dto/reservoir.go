@@ -17,6 +17,9 @@ type CreateReservoir struct {
 	EffectiveAt time.Time `json:"effectiveAt" binding:"required"`
 	Evidence    string    `json:"evidence" binding:"max=2000"`
 	RelatedCode string    `json:"relatedCode" binding:"max=64"`
+	// 水位许可区间（下限/上限，单位米），留空表示不限制。
+	WaterLevelMin *float64 `json:"waterLevelMin"`
+	WaterLevelMax *float64 `json:"waterLevelMax"`
 }
 
 type UpdateReservoir struct {
@@ -32,4 +35,6 @@ type UpdateReservoir struct {
 	EffectiveAt     time.Time `json:"effectiveAt" binding:"required"`
 	Evidence        string    `json:"evidence" binding:"max=2000"`
 	RelatedCode     string    `json:"relatedCode" binding:"max=64"`
+	WaterLevelMin   *float64  `json:"waterLevelMin"`
+	WaterLevelMax   *float64  `json:"waterLevelMax"`
 }

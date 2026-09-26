@@ -8,6 +8,7 @@ var (
 	ErrForbidden         = errors.New("role is not permitted for this operation")
 	ErrTwoPersonRequired = errors.New("submitter and approver must be different users")
 	ErrImmutableState    = errors.New("record can no longer be edited in its current state")
+	ErrExecutionBlocked  = errors.New("execution blocked by reservoir water level permission window")
 	ErrUnauthorized      = errors.New("invalid username or password")
 	ErrInactiveUser      = errors.New("user account is inactive")
 )

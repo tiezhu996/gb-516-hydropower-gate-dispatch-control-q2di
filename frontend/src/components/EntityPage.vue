@@ -23,6 +23,7 @@ const relatedOptions = ref<DomainRecord[]>([]);
 const createForm = reactive({
   code: '', name: '', description: '', facility: '', owner: '', category: '',
   riskLevel: 'medium', metricValue: 0, metricUnit: '%', evidence: '', relatedCode: '', gateState: 'closed',
+  waterLevelMin: null as number | null, waterLevelMax: null as number | null,
 });
 
 const highRisk = computed(() => props.store.items.filter((item: DomainRecord) => ['high', 'critical'].includes(item.riskLevel)).length);
@@ -66,6 +67,8 @@ async function prepareCreate(): Promise<void> {
 	createForm.evidence = '';
 	createForm.relatedCode = '';
   createForm.gateState = 'closed';
+  createForm.waterLevelMin = null;
+  createForm.waterLevelMax = null;
 	relatedOptions.value = [];
 	const relationPaths: Record<string, string> = { gateUnit: 'reservoirs', operationDirective: 'gates', executionConfirmation: 'directives' };
 	try {
@@ -95,8 +98,19 @@ async function createRecord(): Promise<void> {
 		props.store.error = '请完整填写必填业务字段和现场证据';
 		return;
 	}
+	if (props.config.key === 'reservoir' && createForm.waterLevelMin != null && createForm.waterLevelMax != null && createForm.waterLevelMin > createForm.waterLevelMax) {
+		props.store.error = '水位许可下限不能大于上限';
+		return;
+	}
   await props.store.createRecord(props.config.path, { ...createForm, effectiveAt: new Date().toISOString() });
   if (!props.store.error) showCreate.value = false;
+}
+
+function waterWindowLabel(row: DomainRecord): string {
+  if (row.waterLevelMin == null && row.waterLevelMax == null) return '未设置';
+  const lower = row.waterLevelMin != null ? row.waterLevelMin.toFixed(2) : '—';
+  const upper = row.waterLevelMax != null ? row.waterLevelMax.toFixed(2) : '—';
+  return `${lower} ~ ${upper} m`;
 }
 
 function transitionsFor(item: DomainRecord): readonly string[] {
@@ -165,6 +179,24 @@ async function confirmTransition(): Promise<void> {
 		<el-table-column v-if="config.key === 'operationDirective'" label="目标状态" width="120">
           <template #default="{ row }"><GateStateBadge :state="row.gateState || 'closed'" /></template>
         </el-table-column>
+		<el-table-column v-if="config.key === 'operationDirective'" label="所属库区水位" width="150">
+          <template #default="{ row }">
+            <span v-if="row.reservoirWaterLevel != null">{{ row.reservoirCode }} · {{ row.reservoirWaterLevel.toFixed(2) }} {{ row.reservoirWaterUnit || 'm' }}</span>
+            <span v-else class="muted">—</span>
+          </template>
+        </el-table-column>
+		<el-table-column v-if="config.key === 'operationDirective'" label="执行放行" min-width="170">
+          <template #default="{ row }">
+            <div v-if="row.status === 'approved' && row.executionPermitted != null">
+              <el-tag :type="row.executionPermitted ? 'success' : 'danger'" size="small">{{ row.executionPermitted ? '可放行' : '不放行' }}</el-tag>
+              <small v-if="!row.executionPermitted && row.executionBlockReason" class="muted">{{ row.executionBlockReason }}</small>
+            </div>
+            <span v-else class="muted">—</span>
+          </template>
+        </el-table-column>
+		<el-table-column v-if="config.key === 'reservoir'" label="水位许可区间" width="150">
+          <template #default="{ row }">{{ waterWindowLabel(row) }}</template>
+        </el-table-column>
 		<el-table-column label="风险" width="80"><template #default="{ row }">{{ riskLabel(row.riskLevel) }}</template></el-table-column>
         <el-table-column prop="owner" label="责任人" min-width="110" />
 		<el-table-column v-if="['gateUnit', 'operationDirective', 'executionConfirmation'].includes(config.key)" prop="relatedCode" :label="relationLabel" width="130" />
@@ -198,6 +230,8 @@ async function confirmTransition(): Promise<void> {
 		  <el-form-item label="风险等级"><el-select v-model="createForm.riskLevel"><el-option v-for="risk in ['low', 'medium', 'high', 'critical']" :key="risk" :label="riskLabel(risk)" :value="risk" /></el-select></el-form-item>
 		  <el-form-item :label="metricLabel"><el-input-number v-model="createForm.metricValue" :min="0" :precision="2" controls-position="right" /></el-form-item>
 		  <el-form-item label="指标单位"><el-input v-model="createForm.metricUnit" /></el-form-item>
+		  <el-form-item v-if="config.key === 'reservoir'" label="水位许可下限（米）"><el-input-number v-model="createForm.waterLevelMin" :precision="2" controls-position="right" placeholder="留空不限制" /></el-form-item>
+		  <el-form-item v-if="config.key === 'reservoir'" label="水位许可上限（米）"><el-input-number v-model="createForm.waterLevelMax" :precision="2" controls-position="right" placeholder="留空不限制" /></el-form-item>
 		  <el-form-item v-if="config.key === 'operationDirective'" label="目标闸门状态"><el-select v-model="createForm.gateState"><el-option v-for="state in ['open', 'closed', 'locked']" :key="state" :label="statusLabel(state)" :value="state" /></el-select></el-form-item>
         </div>
 		<el-form-item label="业务说明"><el-input v-model="createForm.description" type="textarea" :rows="2" maxlength="1000" show-word-limit /></el-form-item>

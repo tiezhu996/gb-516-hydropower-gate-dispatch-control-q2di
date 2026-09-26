@@ -22,14 +22,14 @@ func newExecutionWorkflow(t *testing.T) (ExecutionConfirmationService, Operation
 	}
 	sqlDB, _ := db.DB()
 	sqlDB.SetMaxOpenConns(1)
-	if err := db.AutoMigrate(&model.GateUnit{}, &model.OperationDirective{}, &model.DirectiveApproval{}, &model.ExecutionConfirmation{}, &model.AuditLog{}); err != nil {
+	if err := db.AutoMigrate(&model.Reservoir{}, &model.GateUnit{}, &model.OperationDirective{}, &model.DirectiveApproval{}, &model.ExecutionConfirmation{}, &model.AuditLog{}); err != nil {
 		t.Fatalf("migrate test database: %v", err)
 	}
 	gateRepo := repository.NewGateUnitRepository(db)
 	directiveRepo := repository.NewOperationDirectiveRepository(db)
 	confirmationRepo := repository.NewExecutionConfirmationRepository(db)
 	security := NewSecurityService(repository.NewSecurityRepository(db), config.Config{})
-	directives := NewOperationDirectiveService(directiveRepo, gateRepo, security)
+	directives := NewOperationDirectiveService(directiveRepo, gateRepo, repository.NewReservoirRepository(db), security)
 	confirmations := NewExecutionConfirmationService(confirmationRepo, directiveRepo, gateRepo, security)
 	gate := model.GateUnit{BaseModel: model.BaseModel{Code: "GU-FLOW", Name: "泄洪闸", Status: "closed", Version: 1}, Facility: "主坝", Owner: "运行一组"}
 	if err := gateRepo.Create(context.Background(), &gate); err != nil {

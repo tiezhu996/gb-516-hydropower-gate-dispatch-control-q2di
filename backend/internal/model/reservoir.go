@@ -16,6 +16,10 @@ type Reservoir struct {
 	EffectiveAt time.Time `json:"effectiveAt"`
 	Evidence    string    `json:"evidence" gorm:"size:2000"`
 	RelatedCode string    `json:"relatedCode" gorm:"size:64;index"`
+	// WaterLevelMin/WaterLevelMax 是水位许可区间的下限和上限，单位米。
+	// 两者都为空表示库区未配置许可区间，指令执行按现状放行。
+	WaterLevelMin *float64 `json:"waterLevelMin"`
+	WaterLevelMax *float64 `json:"waterLevelMax"`
 }
 
 func (item *Reservoir) GetBase() *BaseModel { return &item.BaseModel }

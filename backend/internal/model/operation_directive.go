@@ -22,6 +22,13 @@ type OperationDirective struct {
 	ApprovedBy  string              `json:"approvedBy" gorm:"size:80;index"`
 	ApprovedAt  *time.Time          `json:"approvedAt"`
 	Approvals   []DirectiveApproval `json:"approvals" gorm:"foreignKey:DirectiveID;constraint:OnDelete:CASCADE"`
+	// 以下字段不落库，由 service 在读取时按关联闸门所属库区的当前水位计算，
+	// 供指令列表直接展示水位和本次执行是否放行。
+	ReservoirCode        string   `json:"reservoirCode,omitempty" gorm:"-"`
+	ReservoirWaterLevel  *float64 `json:"reservoirWaterLevel,omitempty" gorm:"-"`
+	ReservoirWaterUnit   string   `json:"reservoirWaterUnit,omitempty" gorm:"-"`
+	ExecutionPermitted   *bool    `json:"executionPermitted,omitempty" gorm:"-"`
+	ExecutionBlockReason string   `json:"executionBlockReason,omitempty" gorm:"-"`
 }
 
 func (item *OperationDirective) GetBase() *BaseModel { return &item.BaseModel }

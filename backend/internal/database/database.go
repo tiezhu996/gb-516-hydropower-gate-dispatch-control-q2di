@@ -139,21 +139,24 @@ func seedReservoir(ctx context.Context, db *gorm.DB) error {
 		return err
 	}
 	now := time.Now().UTC()
+	windowMin, windowMax := 165.0, 172.0
 	items := []model.Reservoir{
 
 		{BaseModel: model.BaseModel{Code: "R-001", Name: "库区示例一", Status: "normal", Version: 1,
 			Description: "用于启动验证和主要流程演示的库区记录"}, Facility: "水电站闸门调度许可区域1", Owner: "运行一组",
-			Category: "常规", RiskLevel: "low", MetricValue: 12.5, MetricUnit: "unit",
-			EffectiveAt: now.Add(0 * time.Hour), Evidence: "已完成基础证据核对", RelatedCode: "R-001"},
+			Category: "常规", RiskLevel: "low", MetricValue: 168.2, MetricUnit: "m",
+			EffectiveAt: now.Add(0 * time.Hour), Evidence: "已完成基础证据核对", RelatedCode: "R-001",
+			WaterLevelMin: &windowMin, WaterLevelMax: &windowMax},
 
 		{BaseModel: model.BaseModel{Code: "R-002", Name: "库区示例二", Status: "warning", Version: 1,
 			Description: "用于启动验证和主要流程演示的库区记录"}, Facility: "水电站闸门调度许可区域2", Owner: "质量复核组",
-			Category: "重点", RiskLevel: "medium", MetricValue: 25.0, MetricUnit: "%",
-			EffectiveAt: now.Add(3 * time.Hour), Evidence: "已完成基础证据核对", RelatedCode: "R-002"},
+			Category: "重点", RiskLevel: "medium", MetricValue: 170.0, MetricUnit: "m",
+			EffectiveAt: now.Add(3 * time.Hour), Evidence: "已完成基础证据核对", RelatedCode: "R-002",
+			WaterLevelMin: &windowMin, WaterLevelMax: &windowMax},
 
 		{BaseModel: model.BaseModel{Code: "R-003", Name: "库区示例三", Status: "critical", Version: 1,
 			Description: "用于启动验证和主要流程演示的库区记录"}, Facility: "水电站闸门调度许可区域3", Owner: "安全主管组",
-			Category: "复核", RiskLevel: "high", MetricValue: 37.5, MetricUnit: "score",
+			Category: "复核", RiskLevel: "high", MetricValue: 171.0, MetricUnit: "m",
 			EffectiveAt: now.Add(6 * time.Hour), Evidence: "已完成基础证据核对", RelatedCode: "R-003"},
 	}
 	return db.WithContext(ctx).Create(&items).Error

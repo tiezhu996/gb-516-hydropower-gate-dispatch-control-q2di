@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"github.com/blueship581/hydropower-gate-dispatch-control/backend/internal/dto"
 	"github.com/blueship581/hydropower-gate-dispatch-control/backend/internal/model"
 	"github.com/blueship581/hydropower-gate-dispatch-control/backend/internal/repository"
+	"gorm.io/gorm"
 )
 
 type OperationDirectiveService interface {
@@ -25,19 +27,32 @@ type OperationDirectiveService interface {
 type operationDirectiveService struct {
 	repository repository.OperationDirectiveRepository
 	gates      repository.GateUnitRepository
+	reservoirs repository.ReservoirRepository
 	security   SecurityService
 }
 
-func NewOperationDirectiveService(repo repository.OperationDirectiveRepository, gates repository.GateUnitRepository, security SecurityService) OperationDirectiveService {
-	return &operationDirectiveService{repository: repo, gates: gates, security: security}
+func NewOperationDirectiveService(repo repository.OperationDirectiveRepository, gates repository.GateUnitRepository, reservoirs repository.ReservoirRepository, security SecurityService) OperationDirectiveService {
+	return &operationDirectiveService{repository: repo, gates: gates, reservoirs: reservoirs, security: security}
 }
 
 func (s *operationDirectiveService) List(ctx context.Context, query dto.PageQuery) (repository.Page[model.OperationDirective], error) {
-	return s.repository.List(ctx, query)
+	page, err := s.repository.List(ctx, query)
+	if err != nil {
+		return page, err
+	}
+	for index := range page.Items {
+		s.decorateExecutionContext(ctx, &page.Items[index])
+	}
+	return page, nil
 }
 
 func (s *operationDirectiveService) Get(ctx context.Context, id uint) (model.OperationDirective, error) {
-	return s.repository.Get(ctx, id)
+	item, err := s.repository.Get(ctx, id)
+	if err != nil {
+		return model.OperationDirective{}, err
+	}
+	s.decorateExecutionContext(ctx, &item)
+	return item, nil
 }
 
 func (s *operationDirectiveService) Create(ctx context.Context, input dto.CreateOperationDirective, actor, requestID string) (model.OperationDirective, error) {
@@ -119,7 +134,7 @@ func (s *operationDirectiveService) Update(ctx context.Context, id uint, input d
 	}); err != nil {
 		return model.OperationDirective{}, fmt.Errorf("update 操作指令: %w", err)
 	}
-	return s.repository.Get(ctx, id)
+	return s.Get(ctx, id)
 }
 
 func (s *operationDirectiveService) Transition(ctx context.Context, id uint, input dto.TransitionRequest, actor, role, requestID string) (model.OperationDirective, error) {
@@ -146,6 +161,15 @@ func (s *operationDirectiveService) Transition(ctx context.Context, id uint, inp
 		}
 		if target == string(constants.DirectiveStateExecuting) && linkedGate.Status == string(constants.GateStateLocked) {
 			return model.OperationDirective{}, fmt.Errorf("%w: locked gate cannot execute a directive", ErrInvalidInput)
+		}
+		if target == string(constants.DirectiveStateExecuting) {
+			blockReason, permitted, permErr := s.executionPermission(ctx, current, linkedGate)
+			if permErr != nil {
+				return model.OperationDirective{}, permErr
+			}
+			if !permitted {
+				return model.OperationDirective{}, fmt.Errorf("%w: %s，指令保持已复核", ErrExecutionBlocked, blockReason)
+			}
 		}
 		gate = &linkedGate
 		if target == string(constants.DirectiveStateAborted) {
@@ -200,7 +224,7 @@ func (s *operationDirectiveService) Transition(ctx context.Context, id uint, inp
 	}); err != nil {
 		return model.OperationDirective{}, fmt.Errorf("transition 操作指令: %w", err)
 	}
-	return s.repository.Get(ctx, id)
+	return s.Get(ctx, id)
 }
 
 func (s *operationDirectiveService) Delete(ctx context.Context, id uint, actor, requestID string) error {
@@ -243,4 +267,60 @@ func validateOperationDirectiveBusinessFields(code, name, facility, owner string
 		return ErrInvalidInput
 	}
 	return nil
+}
+
+// executionPermission 在指令从已复核推进到执行前，按关联闸门所属库区的当前
+// 水位判定是否放行。闸门未关联库区或库区未填许可区间时按现状放行。
+func (s *operationDirectiveService) executionPermission(ctx context.Context, directive model.OperationDirective, gate model.GateUnit) (string, bool, error) {
+	reservoir, err := s.reservoirs.GetByCode(ctx, gate.RelatedCode)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return "", true, nil
+		}
+		return "", false, fmt.Errorf("load linked reservoir %q: %w", gate.RelatedCode, err)
+	}
+	reason, permitted := evaluateExecutionPermission(directive.GateState, reservoir)
+	return reason, permitted, nil
+}
+
+// evaluateExecutionPermission 是水位许可区间的纯判定逻辑，供执行前校验和列表
+// 展示共用：库区受限时开闸一律拒绝；当前水位越过许可上限或低于许可下限时拒绝，
+// 但水位越上限时关闸照旧放行。
+func evaluateExecutionPermission(gateState string, reservoir model.Reservoir) (string, bool) {
+	target := strings.TrimSpace(gateState)
+	unit := strings.TrimSpace(reservoir.MetricUnit)
+	if unit == "" {
+		unit = "m"
+	}
+	level := reservoir.MetricValue
+	if reservoir.Status == "restricted" && target == string(constants.GateStateOpen) {
+		return fmt.Sprintf("库区 %s 处于受限状态，开闸一律拒绝（当前水位 %.2f %s）", reservoir.Code, level, unit), false
+	}
+	if reservoir.WaterLevelMax != nil && level > *reservoir.WaterLevelMax && target != string(constants.GateStateClosed) {
+		return fmt.Sprintf("当前水位 %.2f %s 越过库区 %s 许可上限 %.2f %s", level, unit, reservoir.Code, *reservoir.WaterLevelMax, unit), false
+	}
+	if reservoir.WaterLevelMin != nil && level < *reservoir.WaterLevelMin {
+		return fmt.Sprintf("当前水位 %.2f %s 低于库区 %s 许可下限 %.2f %s", level, unit, reservoir.Code, *reservoir.WaterLevelMin, unit), false
+	}
+	return "", true
+}
+
+// decorateExecutionContext 为列表和详情补上所属库区的当前水位以及此刻推进
+// 执行是否放行，任何关联数据缺失都保持字段为空而不影响读取。
+func (s *operationDirectiveService) decorateExecutionContext(ctx context.Context, item *model.OperationDirective) {
+	gate, err := s.gates.GetByCode(ctx, item.RelatedCode)
+	if err != nil {
+		return
+	}
+	reservoir, err := s.reservoirs.GetByCode(ctx, gate.RelatedCode)
+	if err != nil {
+		return
+	}
+	item.ReservoirCode = reservoir.Code
+	level := reservoir.MetricValue
+	item.ReservoirWaterLevel = &level
+	item.ReservoirWaterUnit = reservoir.MetricUnit
+	reason, permitted := evaluateExecutionPermission(item.GateState, reservoir)
+	item.ExecutionPermitted = &permitted
+	item.ExecutionBlockReason = reason
 }
